@@ -3,7 +3,7 @@ node_modules/
 
 # Data files (contains sensitive user information)
 data/
-*.json
+data/*.json
 
 # Google credentials (NEVER commit this!)
 server/google-credentials.json
