@@ -20,6 +20,17 @@ const ORDERS_FILE = path.join(DATA_DIR, 'orders.json');
 // Google Sheets configuration
 const SPREADSHEET_ID = '1wW7S0fSO71uH3mPJrryHv2-kWMIf31vjF4nQSFWPoBk';
 
+// Hardcoded users (persist across server restarts on Render)
+const HARDCODED_USERS = [
+    {
+        id: 'admin_nexa',
+        name: 'NEXA Office',
+        email: 'office@terranexa.co.il',
+        password: 'nexa2024',
+        createdAt: new Date().toISOString()
+    }
+];
+
 // Initialize data files
 async function initDataFiles() {
     try {
@@ -28,13 +39,26 @@ async function initDataFiles() {
         try {
             await fs.access(USERS_FILE);
         } catch {
-            await fs.writeFile(USERS_FILE, JSON.stringify([]));
+            await fs.writeFile(USERS_FILE, JSON.stringify(HARDCODED_USERS));
         }
 
         try {
             await fs.access(ORDERS_FILE);
         } catch {
             await fs.writeFile(ORDERS_FILE, JSON.stringify([]));
+        }
+
+        // Ensure hardcoded users are always present
+        const users = await readJSON(USERS_FILE);
+        let updated = false;
+        HARDCODED_USERS.forEach(hardcodedUser => {
+            if (!users.find(u => u.email === hardcodedUser.email)) {
+                users.push(hardcodedUser);
+                updated = true;
+            }
+        });
+        if (updated) {
+            await writeJSON(USERS_FILE, users);
         }
     } catch (error) {
         console.error('Error initializing data files:', error);
@@ -144,6 +168,11 @@ app.post('/api/auth/register', async (req, res) => {
             return res.status(400).json({ message: 'יש למלא את כל השדות' });
         }
 
+        // Check if trying to register with a hardcoded email
+        if (HARDCODED_USERS.find(u => u.email === email)) {
+            return res.status(400).json({ message: 'משתמש עם אימייל זה כבר קיים' });
+        }
+
         const users = await readJSON(USERS_FILE);
 
         if (users.find(u => u.email === email)) {
@@ -179,6 +208,16 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(400).json({ message: 'יש למלא את כל השדות' });
         }
 
+        // Check hardcoded users first (always available)
+        const hardcodedUser = HARDCODED_USERS.find(u => u.email === email && u.password === password);
+        if (hardcodedUser) {
+            return res.json({
+                message: 'התחברות הצליחה',
+                user: { id: hardcodedUser.id, name: hardcodedUser.name, email: hardcodedUser.email }
+            });
+        }
+
+        // Check file-based users
         const users = await readJSON(USERS_FILE);
         const user = users.find(u => u.email === email && u.password === password);
 
