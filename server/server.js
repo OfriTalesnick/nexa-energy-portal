@@ -17,6 +17,9 @@ const DATA_DIR = path.join(__dirname, '../data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const ORDERS_FILE = path.join(DATA_DIR, 'orders.json');
 
+// Google Sheets configuration
+const SPREADSHEET_ID = '1wW7S0fSO71uH3mPJrryHv2-kWMIf31vjF4nQSFWPoBk';
+
 // Initialize data files
 async function initDataFiles() {
     try {
@@ -63,6 +66,75 @@ function generateId() {
     return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
+// Google Sheets Integration
+async function syncToGoogleSheets(order) {
+    try {
+        const credentialsPath = path.join(__dirname, 'google-credentials.json');
+
+        try {
+            await fs.access(credentialsPath);
+        } catch {
+            console.log('Google Sheets credentials not found. Skipping sync.');
+            return;
+        }
+
+        const credentials = JSON.parse(await fs.readFile(credentialsPath, 'utf8'));
+
+        const auth = new google.auth.GoogleAuth({
+            credentials,
+            scopes: ['https://www.googleapis.com/auth/spreadsheets']
+        });
+
+        const sheets = google.sheets({ version: 'v4', auth });
+
+        // Prepare row data: ID | Date | Building | Address | Consultant | Status | Drive_Link
+        const rowData = [
+            order.id,
+            new Date(order.createdAt).toLocaleDateString('he-IL'),
+            order.data['שם הבניין'] || '',
+            order.data['כתובת (רחוב + מספר)'] || '',
+            order.data['שם היועץ התרמי'] || '',
+            order.status,
+            order.resultLink || ''
+        ];
+
+        // Check if order already exists in sheet
+        const response = await sheets.spreadsheets.values.get({
+            spreadsheetId: SPREADSHEET_ID,
+            range: 'Sheet1!A:A'
+        });
+
+        const existingIds = response.data.values || [];
+        const rowIndex = existingIds.findIndex(row => row[0] === order.id);
+
+        if (rowIndex >= 0) {
+            // Update existing row
+            await sheets.spreadsheets.values.update({
+                spreadsheetId: SPREADSHEET_ID,
+                range: `Sheet1!A${rowIndex + 1}:G${rowIndex + 1}`,
+                valueInputOption: 'USER_ENTERED',
+                resource: {
+                    values: [rowData]
+                }
+            });
+            console.log('Order updated in Google Sheets');
+        } else {
+            // Append new row
+            await sheets.spreadsheets.values.append({
+                spreadsheetId: SPREADSHEET_ID,
+                range: 'Sheet1!A:G',
+                valueInputOption: 'USER_ENTERED',
+                resource: {
+                    values: [rowData]
+                }
+            });
+            console.log('Order added to Google Sheets');
+        }
+    } catch (error) {
+        console.error('Error syncing to Google Sheets:', error.message);
+    }
+}
+
 // Auth Routes
 app.post('/api/auth/register', async (req, res) => {
     try {
@@ -74,7 +146,6 @@ app.post('/api/auth/register', async (req, res) => {
 
         const users = await readJSON(USERS_FILE);
 
-        // Check if user already exists
         if (users.find(u => u.email === email)) {
             return res.status(400).json({ message: 'משתמש עם אימייל זה כבר קיים' });
         }
@@ -83,7 +154,7 @@ app.post('/api/auth/register', async (req, res) => {
             id: generateId(),
             name,
             email,
-            password, // In production, use bcrypt to hash passwords
+            password,
             createdAt: new Date().toISOString()
         };
 
@@ -140,14 +211,15 @@ app.post('/api/orders', async (req, res) => {
             id: generateId(),
             ...orderData,
             createdAt: new Date().toISOString(),
-            status: 'pending'
+            status: 'התקבל',
+            resultLink: ''
         };
 
         orders.push(newOrder);
         await writeJSON(ORDERS_FILE, orders);
 
-        // Send to Google Sheets
-        await sendToGoogleSheets(newOrder);
+        // Sync to Google Sheets
+        await syncToGoogleSheets(newOrder);
 
         res.status(201).json({
             message: 'הזמנה נוצרה בהצלחה',
@@ -163,13 +235,20 @@ app.get('/api/orders/user/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
         const orders = await readJSON(ORDERS_FILE);
-
-        // Filter orders for this user only
         const userOrders = orders.filter(order => order.userId === userId);
-
         res.json(userOrders);
     } catch (error) {
         console.error('Error fetching orders:', error);
+        res.status(500).json({ message: 'שגיאת שרת' });
+    }
+});
+
+app.get('/api/orders/all', async (req, res) => {
+    try {
+        const orders = await readJSON(ORDERS_FILE);
+        res.json(orders);
+    } catch (error) {
+        console.error('Error fetching all orders:', error);
         res.status(500).json({ message: 'שגיאת שרת' });
     }
 });
@@ -178,7 +257,6 @@ app.get('/api/orders/:orderId', async (req, res) => {
     try {
         const { orderId } = req.params;
         const orders = await readJSON(ORDERS_FILE);
-
         const order = orders.find(o => o.id === orderId);
 
         if (!order) {
@@ -192,56 +270,40 @@ app.get('/api/orders/:orderId', async (req, res) => {
     }
 });
 
-// Google Sheets Integration
-async function sendToGoogleSheets(order) {
+app.put('/api/orders/:orderId', async (req, res) => {
     try {
-        // Check if credentials file exists
-        const credentialsPath = path.join(__dirname, 'google-credentials.json');
+        const { orderId } = req.params;
+        const { status, resultLink } = req.body;
 
-        try {
-            await fs.access(credentialsPath);
-        } catch {
-            console.log('Google Sheets credentials not found. Skipping Google Sheets integration.');
-            console.log('To enable Google Sheets integration, add google-credentials.json to the server folder.');
-            return;
+        const orders = await readJSON(ORDERS_FILE);
+        const orderIndex = orders.findIndex(o => o.id === orderId);
+
+        if (orderIndex === -1) {
+            return res.status(404).json({ message: 'הזמנה לא נמצאה' });
         }
 
-        const credentials = JSON.parse(await fs.readFile(credentialsPath, 'utf8'));
+        // Update order
+        if (status !== undefined) {
+            orders[orderIndex].status = status;
+        }
+        if (resultLink !== undefined) {
+            orders[orderIndex].resultLink = resultLink;
+        }
 
-        const auth = new google.auth.GoogleAuth({
-            credentials,
-            scopes: ['https://www.googleapis.com/auth/spreadsheets']
+        await writeJSON(ORDERS_FILE, orders);
+
+        // Sync to Google Sheets
+        await syncToGoogleSheets(orders[orderIndex]);
+
+        res.json({
+            message: 'הזמנה עודכנה בהצלחה',
+            order: orders[orderIndex]
         });
-
-        const sheets = google.sheets({ version: 'v4', auth });
-
-        // Your Google Sheet ID - UPDATE THIS
-        const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID_HERE';
-
-        // Prepare row data
-        const rowData = [
-            order.createdAt,
-            order.userName,
-            order.userEmail,
-            order.status,
-            ...Object.values(order.data)
-        ];
-
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: SPREADSHEET_ID,
-            range: 'Sheet1!A:AZ',
-            valueInputOption: 'USER_ENTERED',
-            resource: {
-                values: [rowData]
-            }
-        });
-
-        console.log('Order sent to Google Sheets successfully');
     } catch (error) {
-        console.error('Error sending to Google Sheets:', error.message);
-        // Don't throw error - we don't want to fail the order creation if Google Sheets fails
+        console.error('Error updating order:', error);
+        res.status(500).json({ message: 'שגיאת שרת' });
     }
-}
+});
 
 // Start server
 async function startServer() {

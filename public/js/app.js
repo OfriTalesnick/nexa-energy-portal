@@ -74,6 +74,9 @@ const fieldSections = [
 // API Base URL
 const API_URL = '/api';
 
+// Admin email
+const ADMIN_EMAIL = 'office@terranexa.co.il';
+
 // Check if user is logged in on page load
 document.addEventListener('DOMContentLoaded', () => {
     checkAuth();
@@ -87,6 +90,12 @@ function checkAuth() {
         document.getElementById('authButtons').style.display = 'none';
         document.getElementById('userMenu').style.display = 'flex';
         document.getElementById('userName').textContent = user.name;
+
+        // Show admin button if user is admin
+        const adminBtn = document.getElementById('adminBtn');
+        if (adminBtn) {
+            adminBtn.style.display = isAdmin() ? 'inline-block' : 'none';
+        }
     } else {
         document.getElementById('authButtons').style.display = 'flex';
         document.getElementById('userMenu').style.display = 'none';
@@ -100,6 +109,11 @@ function getCurrentUser() {
 
 function setCurrentUser(user) {
     localStorage.setItem('currentUser', JSON.stringify(user));
+}
+
+function isAdmin() {
+    const user = getCurrentUser();
+    return user && user.email === ADMIN_EMAIL;
 }
 
 function showLogin() {
@@ -289,7 +303,7 @@ async function submitOrder(event) {
         userName: user.name,
         data: formData,
         createdAt: new Date().toISOString(),
-        status: 'pending'
+        status: 'התקבל'
     };
 
     try {
@@ -335,7 +349,26 @@ async function showOrders() {
     }
 }
 
-function displayOrders(orders) {
+// Admin function to show all orders
+async function showAllOrders() {
+    if (!isAdmin()) {
+        alert('רק מנהלים יכולים לצפות בכל ההזמנות');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_URL}/orders/all`);
+        const orders = await response.json();
+
+        displayOrders(orders, true);
+        document.getElementById('ordersModal').style.display = 'block';
+    } catch (error) {
+        console.error('Error:', error);
+        alert('שגיאה בטעינת ההזמנות');
+    }
+}
+
+function displayOrders(orders, adminView = false) {
     const container = document.getElementById('ordersList');
 
     if (orders.length === 0) {
@@ -355,18 +388,50 @@ function displayOrders(orders) {
     const ordersList = container.querySelector('.orders-list');
 
     orders.forEach(order => {
-        const orderCard = createOrderCard(order);
+        const orderCard = createOrderCard(order, adminView);
         ordersList.appendChild(orderCard);
     });
 }
 
-function createOrderCard(order) {
+function createOrderCard(order, adminView = false) {
     const card = document.createElement('div');
     card.className = 'order-card';
 
     const date = new Date(order.createdAt).toLocaleDateString('he-IL');
     const buildingName = order.data['שם הבניין'] || 'ללא שם';
     const address = order.data['כתובת (רחוב + מספר)'] || '';
+    const consultant = order.data['שם היועץ התרמי'] || '';
+
+    let actionsHTML = '';
+
+    if (adminView || isAdmin()) {
+        // Admin view: show status dropdown and link input
+        actionsHTML = `
+            <div class="admin-controls">
+                <select id="status-${order.id}" onchange="updateOrderStatus('${order.id}')">
+                    <option value="התקבל" ${order.status === 'התקבל' ? 'selected' : ''}>התקבל</option>
+                    <option value="הדירוג שלך מוכן" ${order.status === 'הדירוג שלך מוכן' ? 'selected' : ''}>הדירוג שלך מוכן</option>
+                </select>
+                <input
+                    type="text"
+                    id="link-${order.id}"
+                    placeholder="קישור Drive"
+                    value="${order.resultLink || ''}"
+                    onchange="updateOrderLink('${order.id}')"
+                    style="margin-top: 8px; padding: 8px; width: 100%; border: 1px solid #ddd; border-radius: 4px;"
+                />
+            </div>
+        `;
+    } else {
+        // Client view: show status and download button if ready
+        if (order.status === 'הדירוג שלך מוכן' && order.resultLink) {
+            actionsHTML = `
+                <button class="btn btn-primary" onclick="window.open('${order.resultLink}', '_blank')">
+                    הורד תוצאות
+                </button>
+            `;
+        }
+    }
 
     card.innerHTML = `
         <div class="order-header">
@@ -374,35 +439,67 @@ function createOrderCard(order) {
                 <div class="order-title">${buildingName}</div>
                 <div class="order-date">${date}</div>
             </div>
-            <span class="order-status status-${order.status}">${getStatusText(order.status)}</span>
+            <span class="order-status">${order.status}</span>
         </div>
         <div class="order-details">
             <div class="order-detail"><strong>כתובת:</strong> ${address}</div>
-            <div class="order-detail"><strong>יועץ:</strong> ${order.data['שם היועץ התרמי'] || ''}</div>
+            <div class="order-detail"><strong>יועץ:</strong> ${consultant}</div>
             <div class="order-detail"><strong>חברה:</strong> ${order.data['שם החברה ליעוץ תרמי'] || ''}</div>
         </div>
         <div class="order-actions">
-            <button class="btn btn-outline" data-order-id="${order.id}">
+            ${actionsHTML}
+            <button class="btn btn-outline" onclick="duplicateOrder('${order.id}')">
                 שכפל הזמנה
             </button>
-			<button onclick="editStatus('${order.id}')">עדכן סטטוס</button>
         </div>
     `;
-
-    // Add click listener here (instead of inline onclick)
-    const duplicateBtn = card.querySelector('button[data-order-id]');
-    duplicateBtn.addEventListener('click', () => duplicateOrder(order.id));
 
     return card;
 }
 
-function getStatusText(status) {
-    const statusMap = {
-        'pending': 'ממתין',
-        'processing': 'בטיפול',
-        'completed': 'הושלם'
-    };
-    return statusMap[status] || status;
+async function updateOrderStatus(orderId) {
+    const statusSelect = document.getElementById(`status-${orderId}`);
+    const newStatus = statusSelect.value;
+
+    try {
+        const response = await fetch(`${API_URL}/orders/${orderId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: newStatus })
+        });
+
+        if (response.ok) {
+            alert('הסטטוס עודכן בהצלחה');
+            showAllOrders(); // Refresh the list
+        } else {
+            alert('שגיאה בעדכון הסטטוס');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        alert('שגיאה בהתחברות לשרת');
+    }
+}
+
+async function updateOrderLink(orderId) {
+    const linkInput = document.getElementById(`link-${orderId}`);
+    const newLink = linkInput.value;
+
+    try {
+        const response = await fetch(`${API_URL}/orders/${orderId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ resultLink: newLink })
+        });
+
+        if (response.ok) {
+            alert('הקישור עודכן בהצלחה');
+        } else {
+            alert('שגיאה בעדכון הקישור');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        alert('שגיאה בהתחברות לשרת');
+    }
 }
 
 async function duplicateOrder(orderId) {
@@ -436,35 +533,4 @@ window.onclick = function(event) {
             modal.style.display = 'none';
         }
     });
-}
-
-// EXPORT TO GOOGLE SHEETS (CSV)
-document.getElementById('exportBtn')?.addEventListener('click', () => {
-  fetch('/api/orders/all')
-    .then(r => r.json())
-    .then(orders => {
-      let csv = 'תאריך,בניין,כתובת,יועץ,סטטוס\n';
-      orders.forEach(o => {
-        csv += `${new Date(o.createdAt).toLocaleDateString('he-IL')},${o.data['שם הבניין'] || ''},${o.data['כתובת (רחוב + מספר)'] || ''},${o.data['שם היועץ התרמי'] || ''},${o.status}\n`;
-      });
-      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'nexa-orders.csv';
-      a.click();
-    });
-});
-
-async function editStatus(id) {
-  const status = prompt('סטטוס חדש (pending/processing/completed):');
-  const link = prompt('קישור ל-Google Drive:');
-  if (status || link) {
-    await fetch(`/api/orders/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status, resultLink: link })
-    });
-    location.reload();
-  }
 }
