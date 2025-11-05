@@ -72,7 +72,7 @@ const fieldSections = [
 ];
 
 // API Base URL
-const API_URL = 'http://localhost:3000/api';
+const API_URL = '/api';
 
 // Check if user is logged in on page load
 document.addEventListener('DOMContentLoaded', () => {
@@ -382,11 +382,15 @@ function createOrderCard(order) {
             <div class="order-detail"><strong>חברה:</strong> ${order.data['שם החברה ליעוץ תרמי'] || ''}</div>
         </div>
         <div class="order-actions">
-            <button class="btn btn-outline" onclick='duplicateOrder(${JSON.stringify(order).replace(/'/g, "\\'")})'>
+            <button class="btn btn-outline" data-order-id="${order.id}">
                 שכפל הזמנה
             </button>
         </div>
     `;
+
+    // Add click listener here (instead of inline onclick)
+    const duplicateBtn = card.querySelector('button[data-order-id]');
+    duplicateBtn.addEventListener('click', () => duplicateOrder(order.id));
 
     return card;
 }
@@ -400,19 +404,27 @@ function getStatusText(status) {
     return statusMap[status] || status;
 }
 
-function duplicateOrder(order) {
+async function duplicateOrder(orderId) {
     closeModal('ordersModal');
     showOrderForm();
 
-    // Wait for modal to open and then fill the form
-    setTimeout(() => {
-        formFields.forEach(field => {
-            const input = document.getElementById(`field_${field.num}`);
-            if (input && order.data[field.name]) {
-                input.value = order.data[field.name];
-            }
-        });
-    }, 100);
+    try {
+        const response = await fetch(`${API_URL}/orders/${orderId}`);
+        const order = await response.json();
+
+        // Wait for form to load, then fill
+        setTimeout(() => {
+            formFields.forEach(field => {
+                const input = document.getElementById(`field_${field.num}`);
+                if (input && order.data[field.name]) {
+                    input.value = order.data[field.name];
+                }
+            });
+        }, 100);
+    } catch (error) {
+        console.error('Error duplicating:', error);
+        alert('שגיאה בשכפול ההזמנה');
+    }
 }
 
 // Close modal when clicking outside
