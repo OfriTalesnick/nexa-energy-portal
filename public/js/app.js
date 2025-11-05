@@ -385,6 +385,7 @@ function createOrderCard(order) {
             <button class="btn btn-outline" data-order-id="${order.id}">
                 שכפל הזמנה
             </button>
+			<button onclick="editStatus('${order.id}')">עדכן סטטוס</button>
         </div>
     `;
 
@@ -435,4 +436,35 @@ window.onclick = function(event) {
             modal.style.display = 'none';
         }
     });
+}
+
+// EXPORT TO GOOGLE SHEETS (CSV)
+document.getElementById('exportBtn')?.addEventListener('click', () => {
+  fetch('/api/orders/all')
+    .then(r => r.json())
+    .then(orders => {
+      let csv = 'תאריך,בניין,כתובת,יועץ,סטטוס\n';
+      orders.forEach(o => {
+        csv += `${new Date(o.createdAt).toLocaleDateString('he-IL')},${o.data['שם הבניין'] || ''},${o.data['כתובת (רחוב + מספר)'] || ''},${o.data['שם היועץ התרמי'] || ''},${o.status}\n`;
+      });
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'nexa-orders.csv';
+      a.click();
+    });
+});
+
+async function editStatus(id) {
+  const status = prompt('סטטוס חדש (pending/processing/completed):');
+  const link = prompt('קישור ל-Google Drive:');
+  if (status || link) {
+    await fetch(`/api/orders/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, resultLink: link })
+    });
+    location.reload();
+  }
 }
