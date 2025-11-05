@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: nexa-portal
+    env: static
+    buildCommand: ./build-static.sh
+    staticPublishPath: ./public
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: /server/server.js
