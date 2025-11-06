@@ -361,13 +361,18 @@ async function showOrders() {
 
 // Admin function to show all orders
 async function showAllOrders() {
+    const user = getCurrentUser();
     if (!isAdmin()) {
         alert('רק מנהלים יכולים לצפות בכל ההזמנות');
         return;
     }
 
     try {
-        const response = await fetch(`${API_URL}/orders/all`);
+        const response = await fetch(`${API_URL}/orders/all`, {
+            headers: {
+                'X-User-Email': user.email
+            }
+        });
         const orders = await response.json();
 
         displayOrders(orders, true);
@@ -468,13 +473,17 @@ function createOrderCard(order, adminView = false) {
 }
 
 async function updateOrderStatus(orderId) {
+    const user = getCurrentUser();
     const statusSelect = document.getElementById(`status-${orderId}`);
     const newStatus = statusSelect.value;
 
     try {
         const response = await fetch(`${API_URL}/orders/${orderId}`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'X-User-Email': user.email
+            },
             body: JSON.stringify({ status: newStatus })
         });
 
@@ -482,7 +491,8 @@ async function updateOrderStatus(orderId) {
             alert('הסטטוס עודכן בהצלחה');
             showAllOrders(); // Refresh the list
         } else {
-            alert('שגיאה בעדכון הסטטוס');
+            const data = await response.json();
+            alert(data.message || 'שגיאה בעדכון הסטטוס');
         }
     } catch (error) {
         console.error('Error:', error);
@@ -491,20 +501,25 @@ async function updateOrderStatus(orderId) {
 }
 
 async function updateOrderLink(orderId) {
+    const user = getCurrentUser();
     const linkInput = document.getElementById(`link-${orderId}`);
     const newLink = linkInput.value;
 
     try {
         const response = await fetch(`${API_URL}/orders/${orderId}`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'X-User-Email': user.email
+            },
             body: JSON.stringify({ resultLink: newLink })
         });
 
         if (response.ok) {
             alert('הקישור עודכן בהצלחה');
         } else {
-            alert('שגיאה בעדכון הקישור');
+            const data = await response.json();
+            alert(data.message || 'שגיאה בעדכון הקישור');
         }
     } catch (error) {
         console.error('Error:', error);

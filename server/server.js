@@ -71,6 +71,21 @@ function generateId() {
     return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
+// Middleware to check if user is admin
+async function checkAdmin(req, res, next) {
+    const userEmail = req.headers['x-user-email'];
+
+    if (!userEmail) {
+        return res.status(401).json({ message: 'לא מחובר' });
+    }
+
+    if (userEmail !== ADMIN_USER.email) {
+        return res.status(403).json({ message: 'אין הרשאה - נדרשות הרשאות מנהל' });
+    }
+
+    next();
+}
+
 // Google Sheets Integration
 async function syncToGoogleSheets(order) {
     try {
@@ -270,7 +285,7 @@ app.get('/api/orders/user/:userId', async (req, res) => {
     }
 });
 
-app.get('/api/orders/all', async (req, res) => {
+app.get('/api/orders/all', checkAdmin, async (req, res) => {
     try {
         if (!ordersCollection) {
             return res.status(503).json({ message: 'שירות לא זמין כרגע' });
@@ -309,7 +324,7 @@ app.get('/api/orders/:orderId', async (req, res) => {
     }
 });
 
-app.put('/api/orders/:orderId', async (req, res) => {
+app.put('/api/orders/:orderId', checkAdmin, async (req, res) => {
     try {
         const { orderId } = req.params;
         const { status, resultLink } = req.body;
