@@ -337,22 +337,22 @@ app.put('/api/orders/:orderId', checkAdmin, async (req, res) => {
         if (status !== undefined) updateFields.status = status;
         if (resultLink !== undefined) updateFields.resultLink = resultLink;
 
-        const result = await ordersCollection.findOneAndUpdate(
+        const updatedOrder = await ordersCollection.findOneAndUpdate(
             { id: orderId },
             { $set: updateFields },
             { returnDocument: 'after' }
         );
 
-        if (!result.value) {
+        if (!updatedOrder) {
             return res.status(404).json({ message: 'הזמנה לא נמצאה' });
         }
 
         // Sync to Google Sheets
-        await syncToGoogleSheets(result.value);
+        await syncToGoogleSheets(updatedOrder);
 
         res.json({
             message: 'הזמנה עודכנה בהצלחה',
-            order: result.value
+            order: updatedOrder
         });
     } catch (error) {
         console.error('Error updating order:', error);
