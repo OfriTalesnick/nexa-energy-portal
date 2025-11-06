@@ -1,8 +1,8 @@
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs').promises;
 const path = require('path');
 const { google } = require('googleapis');
+const { MongoClient, ServerApiVersion } = require('mongodb');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,80 +12,61 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Data file paths
-const DATA_DIR = path.join(__dirname, '../data');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const ORDERS_FILE = path.join(DATA_DIR, 'orders.json');
-
 // Google Sheets configuration
 const SPREADSHEET_ID = '1wW7S0fSO71uH3mPJrryHv2-kWMIf31vjF4nQSFWPoBk';
 
-// Hardcoded users (persist across server restarts on Render)
-const HARDCODED_USERS = [
-    {
-        id: 'admin_nexa',
-        name: 'NEXA Office',
-        email: 'office@terranexa.co.il',
-        password: 'nexa2024',
-        createdAt: new Date().toISOString()
-    }
-];
+// MongoDB configuration
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/nexa-portal';
+let db;
+let usersCollection;
+let ordersCollection;
 
-// Initialize data files
-async function initDataFiles() {
+// Hardcoded admin user (fallback)
+const ADMIN_USER = {
+    id: 'admin_nexa',
+    name: 'NEXA Office',
+    email: 'office@terranexa.co.il',
+    password: 'nexa2024',
+    createdAt: new Date().toISOString()
+};
+
+// Connect to MongoDB
+async function connectToDatabase() {
     try {
-        await fs.mkdir(DATA_DIR, { recursive: true });
-
-        try {
-            await fs.access(USERS_FILE);
-        } catch {
-            await fs.writeFile(USERS_FILE, JSON.stringify(HARDCODED_USERS));
-        }
-
-        try {
-            await fs.access(ORDERS_FILE);
-        } catch {
-            await fs.writeFile(ORDERS_FILE, JSON.stringify([]));
-        }
-
-        // Ensure hardcoded users are always present
-        const users = await readJSON(USERS_FILE);
-        let updated = false;
-        HARDCODED_USERS.forEach(hardcodedUser => {
-            if (!users.find(u => u.email === hardcodedUser.email)) {
-                users.push(hardcodedUser);
-                updated = true;
+        const client = new MongoClient(MONGODB_URI, {
+            serverApi: {
+                version: ServerApiVersion.v1,
+                strict: true,
+                deprecationErrors: true,
             }
         });
-        if (updated) {
-            await writeJSON(USERS_FILE, users);
+
+        await client.connect();
+        console.log('✅ Connected to MongoDB');
+
+        db = client.db('nexa-portal');
+        usersCollection = db.collection('users');
+        ordersCollection = db.collection('orders');
+
+        // Ensure admin user exists
+        const adminExists = await usersCollection.findOne({ email: ADMIN_USER.email });
+        if (!adminExists) {
+            await usersCollection.insertOne(ADMIN_USER);
+            console.log('✅ Admin user created');
         }
+
+        // Create indexes
+        await usersCollection.createIndex({ email: 1 }, { unique: true });
+        await ordersCollection.createIndex({ userId: 1 });
+        await ordersCollection.createIndex({ createdAt: -1 });
+
     } catch (error) {
-        console.error('Error initializing data files:', error);
+        console.error('❌ MongoDB connection error:', error);
+        console.log('⚠️  Server will continue with limited functionality');
     }
 }
 
-// Helper functions
-async function readJSON(filePath) {
-    try {
-        const data = await fs.readFile(filePath, 'utf8');
-        return JSON.parse(data);
-    } catch (error) {
-        console.error('Error reading file:', error);
-        return [];
-    }
-}
-
-async function writeJSON(filePath, data) {
-    try {
-        await fs.writeFile(filePath, JSON.stringify(data, null, 2));
-        return true;
-    } catch (error) {
-        console.error('Error writing file:', error);
-        return false;
-    }
-}
-
+// Helper function to generate ID
 function generateId() {
     return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
@@ -94,15 +75,14 @@ function generateId() {
 async function syncToGoogleSheets(order) {
     try {
         const credentialsPath = path.join(__dirname, 'google-credentials.json');
+        const fs = require('fs');
 
-        try {
-            await fs.access(credentialsPath);
-        } catch {
+        if (!fs.existsSync(credentialsPath)) {
             console.log('Google Sheets credentials not found. Skipping sync.');
             return;
         }
 
-        const credentials = JSON.parse(await fs.readFile(credentialsPath, 'utf8'));
+        const credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
 
         const auth = new google.auth.GoogleAuth({
             credentials,
@@ -168,14 +148,13 @@ app.post('/api/auth/register', async (req, res) => {
             return res.status(400).json({ message: 'יש למלא את כל השדות' });
         }
 
-        // Check if trying to register with a hardcoded email
-        if (HARDCODED_USERS.find(u => u.email === email)) {
-            return res.status(400).json({ message: 'משתמש עם אימייל זה כבר קיים' });
+        if (!usersCollection) {
+            return res.status(503).json({ message: 'שירות לא זמין כרגע' });
         }
 
-        const users = await readJSON(USERS_FILE);
-
-        if (users.find(u => u.email === email)) {
+        // Check if user already exists
+        const existingUser = await usersCollection.findOne({ email });
+        if (existingUser) {
             return res.status(400).json({ message: 'משתמש עם אימייל זה כבר קיים' });
         }
 
@@ -187,8 +166,7 @@ app.post('/api/auth/register', async (req, res) => {
             createdAt: new Date().toISOString()
         };
 
-        users.push(newUser);
-        await writeJSON(USERS_FILE, users);
+        await usersCollection.insertOne(newUser);
 
         res.status(201).json({
             message: 'משתמש נוצר בהצלחה',
@@ -208,18 +186,19 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(400).json({ message: 'יש למלא את כל השדות' });
         }
 
-        // Check hardcoded users first (always available)
-        const hardcodedUser = HARDCODED_USERS.find(u => u.email === email && u.password === password);
-        if (hardcodedUser) {
+        // Check hardcoded admin first (fallback if DB is down)
+        if (email === ADMIN_USER.email && password === ADMIN_USER.password) {
             return res.json({
                 message: 'התחברות הצליחה',
-                user: { id: hardcodedUser.id, name: hardcodedUser.name, email: hardcodedUser.email }
+                user: { id: ADMIN_USER.id, name: ADMIN_USER.name, email: ADMIN_USER.email }
             });
         }
 
-        // Check file-based users
-        const users = await readJSON(USERS_FILE);
-        const user = users.find(u => u.email === email && u.password === password);
+        if (!usersCollection) {
+            return res.status(503).json({ message: 'שירות לא זמין כרגע' });
+        }
+
+        const user = await usersCollection.findOne({ email, password });
 
         if (!user) {
             return res.status(401).json({ message: 'אימייל או סיסמה שגויים' });
@@ -244,7 +223,9 @@ app.post('/api/orders', async (req, res) => {
             return res.status(400).json({ message: 'חסר מזהה משתמש' });
         }
 
-        const orders = await readJSON(ORDERS_FILE);
+        if (!ordersCollection) {
+            return res.status(503).json({ message: 'שירות לא זמין כרגע' });
+        }
 
         const newOrder = {
             id: generateId(),
@@ -254,8 +235,7 @@ app.post('/api/orders', async (req, res) => {
             resultLink: ''
         };
 
-        orders.push(newOrder);
-        await writeJSON(ORDERS_FILE, orders);
+        await ordersCollection.insertOne(newOrder);
 
         // Sync to Google Sheets
         await syncToGoogleSheets(newOrder);
@@ -273,8 +253,16 @@ app.post('/api/orders', async (req, res) => {
 app.get('/api/orders/user/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
-        const orders = await readJSON(ORDERS_FILE);
-        const userOrders = orders.filter(order => order.userId === userId);
+
+        if (!ordersCollection) {
+            return res.status(503).json({ message: 'שירות לא זמין כרגע' });
+        }
+
+        const userOrders = await ordersCollection
+            .find({ userId })
+            .sort({ createdAt: -1 })
+            .toArray();
+
         res.json(userOrders);
     } catch (error) {
         console.error('Error fetching orders:', error);
@@ -284,7 +272,15 @@ app.get('/api/orders/user/:userId', async (req, res) => {
 
 app.get('/api/orders/all', async (req, res) => {
     try {
-        const orders = await readJSON(ORDERS_FILE);
+        if (!ordersCollection) {
+            return res.status(503).json({ message: 'שירות לא זמין כרגע' });
+        }
+
+        const orders = await ordersCollection
+            .find({})
+            .sort({ createdAt: -1 })
+            .toArray();
+
         res.json(orders);
     } catch (error) {
         console.error('Error fetching all orders:', error);
@@ -295,8 +291,12 @@ app.get('/api/orders/all', async (req, res) => {
 app.get('/api/orders/:orderId', async (req, res) => {
     try {
         const { orderId } = req.params;
-        const orders = await readJSON(ORDERS_FILE);
-        const order = orders.find(o => o.id === orderId);
+
+        if (!ordersCollection) {
+            return res.status(503).json({ message: 'שירות לא זמין כרגע' });
+        }
+
+        const order = await ordersCollection.findOne({ id: orderId });
 
         if (!order) {
             return res.status(404).json({ message: 'הזמנה לא נמצאה' });
@@ -314,29 +314,30 @@ app.put('/api/orders/:orderId', async (req, res) => {
         const { orderId } = req.params;
         const { status, resultLink } = req.body;
 
-        const orders = await readJSON(ORDERS_FILE);
-        const orderIndex = orders.findIndex(o => o.id === orderId);
+        if (!ordersCollection) {
+            return res.status(503).json({ message: 'שירות לא זמין כרגע' });
+        }
 
-        if (orderIndex === -1) {
+        const updateFields = {};
+        if (status !== undefined) updateFields.status = status;
+        if (resultLink !== undefined) updateFields.resultLink = resultLink;
+
+        const result = await ordersCollection.findOneAndUpdate(
+            { id: orderId },
+            { $set: updateFields },
+            { returnDocument: 'after' }
+        );
+
+        if (!result.value) {
             return res.status(404).json({ message: 'הזמנה לא נמצאה' });
         }
 
-        // Update order
-        if (status !== undefined) {
-            orders[orderIndex].status = status;
-        }
-        if (resultLink !== undefined) {
-            orders[orderIndex].resultLink = resultLink;
-        }
-
-        await writeJSON(ORDERS_FILE, orders);
-
         // Sync to Google Sheets
-        await syncToGoogleSheets(orders[orderIndex]);
+        await syncToGoogleSheets(result.value);
 
         res.json({
             message: 'הזמנה עודכנה בהצלחה',
-            order: orders[orderIndex]
+            order: result.value
         });
     } catch (error) {
         console.error('Error updating order:', error);
@@ -346,7 +347,7 @@ app.put('/api/orders/:orderId', async (req, res) => {
 
 // Start server
 async function startServer() {
-    await initDataFiles();
+    await connectToDatabase();
 
     app.listen(PORT, () => {
         console.log(`
@@ -355,9 +356,8 @@ async function startServer() {
 ║   Server running on http://localhost:${PORT}  ║
 ╚════════════════════════════════════════════╝
 
-📁 Data directory: ${DATA_DIR}
-👥 Users file: ${USERS_FILE}
-📋 Orders file: ${ORDERS_FILE}
+🔗 MongoDB: ${db ? '✅ Connected' : '❌ Not connected'}
+📊 Google Sheets: ${SPREADSHEET_ID}
 
 🚀 Server is ready to accept requests!
         `);
