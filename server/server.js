@@ -89,15 +89,29 @@ async function checkAdmin(req, res, next) {
 // Google Sheets Integration
 async function syncToGoogleSheets(order) {
     try {
-        const credentialsPath = path.join(__dirname, 'google-credentials.json');
         const fs = require('fs');
+        let credentials;
 
-        if (!fs.existsSync(credentialsPath)) {
-            console.log('Google Sheets credentials not found. Skipping sync.');
-            return;
+        // Try to get credentials from environment variable first (for production)
+        if (process.env.GOOGLE_CREDENTIALS) {
+            console.log('📊 Using Google credentials from environment variable');
+            try {
+                credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+            } catch (error) {
+                console.error('❌ Failed to parse GOOGLE_CREDENTIALS environment variable:', error.message);
+                return;
+            }
+        } else {
+            // Fall back to file for local development
+            const credentialsPath = path.join(__dirname, 'google-credentials.json');
+            if (!fs.existsSync(credentialsPath)) {
+                console.log('⚠️ Google Sheets credentials not found. Skipping sync.');
+                console.log('   Set GOOGLE_CREDENTIALS env variable or add google-credentials.json file');
+                return;
+            }
+            console.log('📊 Using Google credentials from file');
+            credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
         }
-
-        const credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
 
         const auth = new google.auth.GoogleAuth({
             credentials,
@@ -136,7 +150,7 @@ async function syncToGoogleSheets(order) {
                     values: [rowData]
                 }
             });
-            console.log('Order updated in Google Sheets');
+            console.log(`✅ Order ${order.id} updated in Google Sheets (row ${rowIndex + 1})`);
         } else {
             // Append new row
             await sheets.spreadsheets.values.append({
@@ -147,10 +161,14 @@ async function syncToGoogleSheets(order) {
                     values: [rowData]
                 }
             });
-            console.log('Order added to Google Sheets');
+            console.log(`✅ Order ${order.id} added to Google Sheets`);
         }
     } catch (error) {
-        console.error('Error syncing to Google Sheets:', error.message);
+        console.error('❌ Error syncing to Google Sheets:', error.message);
+        if (error.response) {
+            console.error('   Response status:', error.response.status);
+            console.error('   Response data:', error.response.data);
+        }
     }
 }
 
@@ -364,6 +382,14 @@ app.put('/api/orders/:orderId', checkAdmin, async (req, res) => {
 async function startServer() {
     await connectToDatabase();
 
+    // Check Google Sheets configuration
+    const fs = require('fs');
+    const hasEnvCredentials = !!process.env.GOOGLE_CREDENTIALS;
+    const hasFileCredentials = fs.existsSync(path.join(__dirname, 'google-credentials.json'));
+    const googleSheetsStatus = hasEnvCredentials || hasFileCredentials
+        ? '✅ Configured'
+        : '⚠️ Not configured (orders will not sync to sheets)';
+
     app.listen(PORT, () => {
         console.log(`
 ╔════════════════════════════════════════════╗
@@ -372,7 +398,8 @@ async function startServer() {
 ╚════════════════════════════════════════════╝
 
 🔗 MongoDB: ${db ? '✅ Connected' : '❌ Not connected'}
-📊 Google Sheets: ${SPREADSHEET_ID}
+📊 Google Sheets: ${googleSheetsStatus}
+   Spreadsheet ID: ${SPREADSHEET_ID}
 
 🚀 Server is ready to accept requests!
         `);
