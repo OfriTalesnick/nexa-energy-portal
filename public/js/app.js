@@ -183,6 +183,10 @@ async function login(event) {
             checkAuth();
             closeModal('loginModal');
             alert('התחברת בהצלחה!');
+            // Auto-load orders for admin after login
+            if (isAdmin()) {
+                showAllOrders();
+            }
         } else {
             alert(data.message || 'שגיאה בהתחברות');
         }
@@ -319,6 +323,12 @@ async function submitOrder(event) {
             alert('ההזמנה נשלחה בהצלחה! צוות המודלים יתחיל לעבוד על החישוב.');
             closeModal('orderFormModal');
             document.getElementById('orderForm').reset();
+            // Auto-show orders after submission
+            if (isAdmin()) {
+                showAllOrders();
+            } else {
+                showOrders();
+            }
         } else {
             alert(data.message || 'שגיאה בשליחת ההזמנה');
         }
